@@ -310,11 +310,25 @@ function loadVoices() { voices = speechSynthesis.getVoices(); }
 loadVoices();
 if (typeof speechSynthesis !== 'undefined') speechSynthesis.onvoiceschanged = loadVoices;
 
+// Apple ships joke/robot voices (Eddy, Bells, Zarvox…) that sound terrible for study;
+// score every candidate so natural voices (Google, neural, premium) win instead.
+const NOVELTY_VOICES = ['albert','bad news','bahh','bells','boing','bubbles','cellos','eddy','flo','fred','good news','grandma','grandpa','jester','junior','kathy','organ','ralph','reed','rocko','sandy','shelley','superstar','trinoids','whisper','wobble','zarvox'];
+const PREFERRED_VOICES = ['yuna','suhyun','sora','samantha','ava','allison','nicky','joelle','zoe','evan','nathan','aaron'];
 function pickVoice(lang) {
-  // prefer an exact match (e.g. ko-KR / en-US), then any voice of that language
-  return voices.find(v => v.lang.replace('_','-') === lang)
-      || voices.find(v => v.lang.startsWith(lang.slice(0, 2)))
-      || null;
+  const candidates = voices.filter(v => v.lang.replace('_','-').toLowerCase().startsWith(lang.slice(0, 2).toLowerCase()));
+  let best = null, bestScore = -Infinity;
+  for (const v of candidates) {
+    const n = v.name.toLowerCase();
+    let score = 0;
+    if (v.lang.replace('_','-') === lang) score += 10;
+    if (n.includes('google')) score += 100;            // Chrome's natural online voices
+    if (n.includes('natural')) score += 90;            // Edge neural voices
+    if (n.includes('premium') || n.includes('enhanced')) score += 60;
+    if (PREFERRED_VOICES.some(p => n.includes(p))) score += 50;
+    if (NOVELTY_VOICES.some(p => n.includes(p))) score -= 200;
+    if (score > bestScore) { bestScore = score; best = v; }
+  }
+  return best;
 }
 
 function speak(text, lang, btn) {
