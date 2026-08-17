@@ -92,6 +92,7 @@
   .tag.en { background: #f3efff; color: var(--en-color); }
   .tag.ko { background: #e8f7fe; color: var(--ko-color); }
   .lang-block .text { font-size: 24px; font-weight: 700; line-height: 1.35; word-break: keep-all; }
+  .rm { color: var(--sub); font-size: 14px; font-style: italic; margin-top: 3px; }
   .speak-btn {
     background: transparent; font-size: 15px; padding: 2px 4px;
     opacity: .5; line-height: 1;
@@ -135,6 +136,31 @@
   .summary-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
   .btn-dl { background: var(--accent); color: #fff; padding: 12px 20px; }
   .btn-new { background: var(--ink); color: #fff; padding: 12px 20px; }
+  .btn-pdf { background: #16a34a; color: #fff; padding: 12px 20px; }
+  .summary-card h3 { font-size: 16px; margin-bottom: 12px; }
+  .prep-status { color: var(--accent); font-size: 13px; margin-bottom: 12px; min-height: 16px; }
+  .ex-row td { padding: 2px 10px 12px; border-bottom: 1px solid var(--border); font-weight: 400; }
+  .ex-line {
+    font-size: 14px; color: var(--ink); padding: 3px 0 3px 10px;
+    border-left: 3px solid var(--accent-soft); margin: 4px 0; line-height: 1.5;
+  }
+  .ex-line .ex-ko { color: var(--sub); }
+  td .rm { font-size: 12.5px; }
+  .quiz-write { width: 45%; }
+  .quiz-write .blank { border-bottom: 1.5px solid #cbd5e1; height: 22px; }
+  .review-boxes { display: flex; gap: 22px; font-size: 15px; font-weight: 600; margin-bottom: 18px; flex-wrap: wrap; }
+  .review-boxes span::before { content: '☐ '; font-size: 17px; }
+  .notes-line { border-bottom: 1px solid var(--border); height: 30px; }
+
+  @media print {
+    body { background: #fff; }
+    header, #lessonView, .archive-view, .summary-actions, .speak-btn { display: none !important; }
+    .summary-view { display: block !important; }
+    .summary-card { box-shadow: none; border-radius: 0; padding: 0 0 18px; margin-bottom: 6px; }
+    .prep-status { display: none; }
+    tr, .ex-row { page-break-inside: avoid; }
+    #quizCard { page-break-before: always; }
+  }
 
   /* live share */
   .share-card {
@@ -240,12 +266,26 @@
     <div class="summary-card">
       <h2>📚 Today's Lesson Summary</h2>
       <p class="date" id="summaryDate"></p>
+      <p class="prep-status" id="prepStatus"></p>
       <table>
         <thead><tr><th>ENGLISH</th><th>KOREAN</th></tr></thead>
         <tbody id="summaryBody"></tbody>
       </table>
     </div>
+    <div class="summary-card" id="quizCard">
+      <h3>✍️ Self-Test — cover the table above and translate!</h3>
+      <table>
+        <thead><tr><th>KOREAN</th><th class="quiz-write">WRITE THE ENGLISH</th></tr></thead>
+        <tbody id="quizBody"></tbody>
+      </table>
+    </div>
+    <div class="summary-card">
+      <h3>📅 Review Plan &amp; Notes</h3>
+      <div class="review-boxes"><span>Tomorrow</span><span>In 3 days</span><span>In 1 week</span></div>
+      <div class="notes-line"></div><div class="notes-line"></div><div class="notes-line"></div><div class="notes-line"></div>
+    </div>
     <div class="summary-actions">
+      <button class="btn-pdf" id="pdfBtn">🖨️ Save as PDF</button>
       <button class="btn-dl" id="dlBtn">📥 Download Study Notes (.md)</button>
       <button class="btn-new" id="newBtn">🔄 Start a New Lesson</button>
     </div>
@@ -302,6 +342,47 @@ async function mmTranslate(text, sl, tl) {
 async function translate(text, sl, tl) {
   try { return await gTranslate(text, sl, tl); }
   catch (e) { return await mmTranslate(text, sl, tl); }
+}
+
+// romanization of Korean text (e.g. 만나요 → mannayo), from the same endpoint
+async function fetchRm(koText) {
+  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=ko&tl=en&dt=t&dt=rm&q=${encodeURIComponent(koText)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('rm ' + res.status);
+  const data = await res.json();
+  return data[0].map(seg => seg[3]).filter(Boolean).join(' ');
+}
+
+// dictionary example sentences for short English words/phrases (up to 2)
+async function fetchExamples(enWord) {
+  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=ko&dt=t&dt=ex&q=${encodeURIComponent(enWord)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('ex ' + res.status);
+  const data = await res.json();
+  const raw = (data[13] && data[13][0]) ? data[13][0].map(x => x[0]).slice(0, 2) : [];
+  const out = [];
+  for (const html of raw) {
+    const en = html.replace(/<\/?b>/g, '');
+    let ko = '';
+    try { ko = await translate(en, 'en', 'ko'); } catch (e) {}
+    out.push([en, ko]);
+  }
+  return out;
+}
+
+// fill in missing romanization + examples; mutates entries, returns true if anything changed
+async function enrichEntries(list) {
+  let changed = false;
+  await Promise.all(list.map(async e => {
+    if (!e.rm) {
+      try { e.rm = await fetchRm(e.ko); changed = true; } catch (err) {}
+    }
+    if (e.ex === undefined && e.en.trim().split(/\s+/).length <= 3) {
+      try { e.ex = await fetchExamples(e.en.trim().replace(/[.!?]+$/, '')); changed = true; }
+      catch (err) { e.ex = []; }
+    }
+  }));
+  return changed;
 }
 
 /* ===== pronunciation (Web Speech API) ===== */
@@ -504,6 +585,7 @@ function render() {
         <div class="lang-block">
           <div class="tag-row"><span class="tag ko">KOREAN</span>${speakBtn(e.ko, 'ko-KR')}</div>
           <div class="text">${esc(e.ko)}</div>
+          ${e.rm ? `<div class="rm">${esc(e.rm)}</div>` : ''}
         </div>
       </div>
       <div class="entry-btns">
@@ -538,9 +620,13 @@ async function submit() {
   try {
     const isKo = hasHangul(text);
     const translated = await translate(text, isKo ? 'ko' : 'en', isKo ? 'en' : 'ko');
+    const koText = isKo ? text : translated;
+    let rm = '';
+    try { rm = await fetchRm(koText); } catch (e) {}
     const entry = {
       en: isKo ? translated : text,
-      ko: isKo ? text : translated,
+      ko: koText,
+      rm,
       star: false,
       time: Date.now()
     };
@@ -580,29 +666,72 @@ function buildSummary(list, dateStr) {
     if (e.star) tr.className = 'starred';
     tr.innerHTML =
       `<td>${e.star ? '<span class="star-mark">⭐</span>' : ''}${speakBtn(e.en, 'en-US')}${esc(e.en)}</td>` +
-      `<td>${speakBtn(e.ko, 'ko-KR')}${esc(e.ko)}</td>`;
+      `<td>${speakBtn(e.ko, 'ko-KR')}${esc(e.ko)}${e.rm ? `<div class="rm">${esc(e.rm)}</div>` : ''}</td>`;
     body.appendChild(tr);
+    if (e.ex && e.ex.length) {
+      const exTr = document.createElement('tr');
+      exTr.className = 'ex-row' + (e.star ? ' starred' : '');
+      // keep Google's <b>word</b> highlight, escape everything else
+      const lines = e.ex.map(([en, ko]) =>
+        `<div class="ex-line">${esc(en).replace(/&lt;b&gt;/g, '<b>').replace(/&lt;\/b&gt;/g, '</b>')}` +
+        (ko ? `<br><span class="ex-ko">${esc(ko)}</span>` : '') + '</div>').join('');
+      exTr.innerHTML = `<td colspan="2">${lines}</td>`;
+      body.appendChild(exTr);
+    }
   });
+  // self-test: Korean prompt → blank English column
+  const quiz = $('quizBody');
+  quiz.innerHTML = '';
+  sorted.forEach(e => {
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      `<td>${esc(e.ko)}${e.rm ? `<div class="rm">${esc(e.rm)}</div>` : ''}</td>` +
+      `<td class="quiz-write"><div class="blank"></div></td>`;
+    quiz.appendChild(tr);
+  });
+}
+
+async function openSummary(list, dateStr, persist) {
+  buildSummary(list, dateStr);
+  showView('summary');
+  $('prepStatus').textContent = '⏳ Adding pronunciation guides and example sentences…';
+  const changed = await enrichEntries(list);
+  if (changed) {
+    if (persist) save();
+    buildSummary(list, dateStr);
+  }
+  $('prepStatus').textContent = '';
 }
 
 $('endBtn').addEventListener('click', () => {
   if (!entries.length) { alert('Nothing has been recorded yet!'); return; }
   viewingArchived = null;
-  buildSummary(entries, fmtDate(new Date()));
-  showView('summary');
+  openSummary(entries, fmtDate(new Date()), true);
 });
+
+$('pdfBtn').addEventListener('click', () => window.print());
 
 function toMarkdown(list, dateStr) {
   const starred = list.filter(e => e.star);
   const rest = list.filter(e => !e.star);
+  const row = e => `| ${e.en} | ${e.ko}${e.rm ? ` *(${e.rm})*` : ''} |\n`;
   let md = `# 📚 Lesson Notes\n\n**${dateStr}** — ${list.length} expressions\n\n`;
   if (starred.length) {
     md += `## ⭐ Important\n\n| English | Korean |\n|---|---|\n`;
-    starred.forEach(e => md += `| ${e.en} | ${e.ko} |\n`);
+    starred.forEach(e => md += row(e));
     md += '\n';
   }
   md += `## 📝 Today's Expressions\n\n| English | Korean |\n|---|---|\n`;
-  rest.forEach(e => md += `| ${e.en} | ${e.ko} |\n`);
+  rest.forEach(e => md += row(e));
+  const withEx = list.filter(e => e.ex && e.ex.length);
+  if (withEx.length) {
+    md += `\n## 💬 Example Sentences\n\n`;
+    withEx.forEach(e => {
+      md += `**${e.en} — ${e.ko}**\n`;
+      e.ex.forEach(([en, ko]) => md += `> ${en.replace(/<\/?b>/g, '**')}${ko ? `\n> ${ko}` : ''}\n>\n`);
+      md += '\n';
+    });
+  }
   md += `\n---\n\n## ✍️ Review Checklist\n\n`;
   list.forEach(e => md += `- [ ] ${e.en} — ${e.ko}\n`);
   return md;
@@ -652,8 +781,7 @@ $('archiveBtn').addEventListener('click', () => {
       div.innerHTML = `<span class="d">📖 ${s.date}</span><span class="n">${s.entries.length} expressions →</span>`;
       div.addEventListener('click', () => {
         viewingArchived = s;
-        buildSummary(s.entries, s.date);
-        showView('summary');
+        openSummary(s.entries, s.date, false);
       });
       box.appendChild(div);
     });
