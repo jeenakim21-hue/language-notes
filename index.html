@@ -154,8 +154,13 @@
 
   @media print {
     body { background: #fff; }
-    header, #lessonView, .archive-view, .summary-actions, .speak-btn { display: none !important; }
-    .summary-view { display: block !important; }
+    .speak-btn { display: none !important; }
+    /* only force the study-notes layout when the summary is actually open */
+    body[data-view="summary"] header,
+    body[data-view="summary"] #lessonView,
+    body[data-view="summary"] .archive-view,
+    body[data-view="summary"] .summary-actions { display: none !important; }
+    body[data-view="summary"] .summary-view { display: block !important; }
     .summary-card { box-shadow: none; border-radius: 0; padding: 0 0 18px; margin-bottom: 6px; }
     .prep-status { display: none; }
     tr, .ex-row { page-break-inside: avoid; }
@@ -650,6 +655,7 @@ $('textInput').addEventListener('keydown', e => { if (e.key === 'Enter') submit(
 
 /* ===== end lesson / summary ===== */
 function showView(name) {
+  document.body.dataset.view = name;
   $('lessonView').style.display  = name === 'lesson'  ? 'block' : 'none';
   $('summaryView').style.display = name === 'summary' ? 'block' : 'none';
   $('archiveView').style.display = name === 'archive' ? 'block' : 'none';
@@ -790,6 +796,7 @@ $('archiveBtn').addEventListener('click', () => {
 });
 $('backBtn').addEventListener('click', () => { viewingArchived = null; render(); showView('lesson'); });
 
+document.body.dataset.view = 'lesson';
 render();
 </script>
 </body>
