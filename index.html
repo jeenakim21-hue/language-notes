@@ -287,7 +287,7 @@
         <input id="textInput" type="text" placeholder="Type in Korean or English…" autocomplete="off" autofocus>
         <button class="btn-go" id="goBtn">Translate ↵</button>
       </div>
-      <p class="hint">💡 Type in either language — it auto-detects and translates to the other. Tap 🔊 to hear the pronunciation.</p>
+      <p class="hint">💡 Type in either language — it auto-translates. Tap 🔊 for pronunciation · double-click any text to correct it yourself.</p>
       <p class="status" id="status"></p>
     </div>
 
@@ -364,17 +364,28 @@ $('todayDate').textContent = fmtDate(new Date());
 const hasHangul = s => /[ㄱ-힝]/.test(s);
 
 /* ===== translation ===== */
-async function gTranslate(text, sl, tl) {
+async function gTranslate(text, sl, tl, expandAlts) {
   const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sl}&tl=${tl}&dt=t&dt=at&q=${encodeURIComponent(text)}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error('gtx ' + res.status);
   const data = await res.json();
   const text2 = data[0].filter(seg => seg[0]).map(seg => seg[0]).join('');
-  // alternative phrasings — only offered for single-segment inputs, where they read naturally
   let alts = [];
   if (data[5] && data[5].length === 1 && data[5][0][2]) {
-    alts = data[5][0][2].map(a => a[0]).filter(a => a && a !== text2).slice(0, 3);
+    alts = data[5][0][2].map(a => a[0]).filter(Boolean);
   }
+  // Trailing punctuation pushes Google toward stiff, formal picks. Query the bare
+  // sentence too and pool both candidate sets, so natural phrasings surface as chips.
+  const stripped = text.replace(/[.!?。]+\s*$/, '');
+  if (expandAlts && stripped && stripped !== text) {
+    try {
+      const extra = await gTranslate(stripped, sl, tl, false);
+      alts = alts.concat([extra.text], extra.alts);
+    } catch (e) {}
+  }
+  const norm = t => t.replace(/[.!?。\s]+$/, '');
+  const seen = new Set([norm(text2)]);
+  alts = alts.filter(a => { const n = norm(a); if (!a || seen.has(n)) return false; seen.add(n); return true; }).slice(0, 3);
   return { text: text2, alts };
 }
 async function mmTranslate(text, sl, tl) {
@@ -387,7 +398,7 @@ async function mmTranslate(text, sl, tl) {
 }
 let usedFallback = false;
 async function translateFull(text, sl, tl) {
-  try { const r = await gTranslate(text, sl, tl); usedFallback = false; return r; }
+  try { const r = await gTranslate(text, sl, tl, true); usedFallback = false; return r; }
   catch (e) { usedFallback = true; return { text: await mmTranslate(text, sl, tl), alts: [] }; }
 }
 async function translate(text, sl, tl) { return (await translateFull(text, sl, tl)).text; }
@@ -623,6 +634,24 @@ const altChips = (e, i) => (e.alts && e.alts.length)
     e.alts.map((a, ai) => `<button class="alt-chip" data-i="${i}" data-ai="${ai}">${esc(a)}</button>`).join('') + '</div>'
   : '';
 
+async function editText(i, side) {
+  const e = entries[i];
+  const current = side === 'ko' ? e.ko : e.en;
+  const input = prompt(side === 'ko' ? 'Edit the Korean text:' : 'Edit the English text:', current);
+  if (input === null) return;
+  const value = input.trim();
+  if (!value || value === current) return;
+  if (side === 'ko') {
+    e.ko = value;
+    e.rm = '';
+    try { e.rm = await fetchRm(e.ko); } catch (err) {}
+  } else {
+    e.en = value;
+  }
+  save(); render();
+  sendOp({ op: 'edit', time: e.time, en: e.en, ko: e.ko, rm: e.rm, alts: e.alts });
+}
+
 async function swapAlt(i, ai) {
   const e = entries[i];
   const chosen = e.alts[ai];
@@ -671,6 +700,13 @@ function render() {
   });
 }
 
+$('entries').addEventListener('dblclick', ev => {
+  const block = ev.target.closest('.lang-block');
+  if (!block || !ev.target.closest('.text')) return;
+  const entryEl = block.closest('.entry');
+  const i = +entryEl.querySelector('button[data-act]').dataset.i;
+  editText(i, block.querySelector('.tag.ko') ? 'ko' : 'en');
+});
 $('entries').addEventListener('click', ev => {
   const chip = ev.target.closest('.alt-chip');
   if (chip) { swapAlt(+chip.dataset.i, +chip.dataset.ai); return; }
