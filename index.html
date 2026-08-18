@@ -249,6 +249,7 @@
       <p id="todayDate"></p>
     </div>
     <div class="header-btns">
+      <button class="btn-ghost" id="aiBtn" title="Set up Claude AI translation">✨ AI</button>
       <button class="btn-ghost" id="shareBtn"><span class="conn-dot" id="connDot"></span>Live Share</button>
       <button class="btn-ghost" id="archiveBtn">History</button>
       <button class="btn-end" id="endBtn">End Today's Lesson ✅</button>
@@ -396,6 +397,83 @@ async function mmTranslate(text, sl, tl) {
   if (!data.responseData || !data.responseData.translatedText) throw new Error('mymemory empty');
   return data.responseData.translatedText;
 }
+/* ===== Claude AI translation (optional — user's own API key, stored on this device only) ===== */
+const CLAUDE_KEY_STORE = 'le_claude_key';
+const getClaudeKey = () => localStorage.getItem(CLAUDE_KEY_STORE) || '';
+
+const CLAUDE_SCHEMA = {
+  type: 'object',
+  properties: {
+    translation: { type: 'string' },
+    alternatives: { type: 'array', items: { type: 'string' } },
+    romanization: { type: 'string' }
+  },
+  required: ['translation', 'alternatives', 'romanization'],
+  additionalProperties: false
+};
+
+async function claudeTranslate(text, isKo) {
+  const src = isKo ? 'Korean' : 'English';
+  const tgt = isKo ? 'English' : 'Korean';
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': getClaudeKey(),
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-5',
+      max_tokens: 16000,
+      output_config: { effort: 'low', format: { type: 'json_schema', schema: CLAUDE_SCHEMA } },
+      messages: [{
+        role: 'user',
+        content: `You are the translation engine inside a Korean-English language-exchange app used by a Korean speaker and their American friend studying together.
+
+Translate the following ${src} text into natural, conversational ${tgt} — the way a native speaker would actually say it in everyday speech. For Korean output, default to polite 해요체 unless the source is clearly intimate speech.
+
+Text: ${JSON.stringify(text)}
+
+Return:
+- translation: the single most natural everyday rendering
+- alternatives: up to 3 other natural renderings with a different nuance or register (e.g. more formal, more casual); empty array if nothing meaningfully different exists
+- romanization: Revised Romanization of the Korean side (romanize the translation if the target is Korean, otherwise romanize the source text)`
+      }]
+    })
+  });
+  if (!res.ok) throw new Error('claude http ' + res.status);
+  const data = await res.json();
+  if (data.stop_reason === 'refusal') throw new Error('claude refusal');
+  const textBlock = (data.content || []).find(b => b.type === 'text');
+  if (!textBlock) throw new Error('claude empty');
+  const out = JSON.parse(textBlock.text);
+  const seen = new Set([out.translation]);
+  const alts = (out.alternatives || []).filter(a => { if (!a || seen.has(a)) return false; seen.add(a); return true; }).slice(0, 3);
+  return { text: out.translation, alts, rm: out.romanization || '' };
+}
+
+$('aiBtn').addEventListener('click', () => {
+  const current = getClaudeKey();
+  const input = prompt(
+    'Claude AI translation (optional, much more natural than Google).\n\n' +
+    '1. Create an API key at console.anthropic.com\n' +
+    '2. Paste it below (starts with sk-ant-)\n\n' +
+    'The key is stored only in this browser and used only to call Claude directly.\n' +
+    'Leave empty and press OK to remove the key and go back to Google Translate.',
+    current
+  );
+  if (input === null) return;
+  const key = input.trim();
+  if (key) localStorage.setItem(CLAUDE_KEY_STORE, key);
+  else localStorage.removeItem(CLAUDE_KEY_STORE);
+  updateAiBadge();
+});
+
+function updateAiBadge() {
+  $('aiBtn').textContent = getClaudeKey() ? '✨ AI on' : '✨ AI';
+}
+
 let usedFallback = false;
 async function translateFull(text, sl, tl) {
   try { const r = await gTranslate(text, sl, tl, true); usedFallback = false; return r; }
@@ -732,10 +810,21 @@ async function submit() {
   $('goBtn').disabled = true;
   try {
     const isKo = hasHangul(text);
-    const tr = await translateFull(text, isKo ? 'ko' : 'en', isKo ? 'en' : 'ko');
+    usedFallback = false;
+    let tr = null, rm = '', engine = 'google';
+    if (getClaudeKey()) {
+      try {
+        const c = await claudeTranslate(text, isKo);
+        tr = { text: c.text, alts: c.alts };
+        rm = c.rm;
+        engine = 'claude';
+      } catch (e) {}
+    }
+    if (!tr) {
+      tr = await translateFull(text, isKo ? 'ko' : 'en', isKo ? 'en' : 'ko');
+    }
     const koText = isKo ? text : tr.text;
-    let rm = '';
-    try { rm = await fetchRm(koText); } catch (e) {}
+    if (!rm) { try { rm = await fetchRm(koText); } catch (e) {} }
     const entry = {
       en: isKo ? tr.text : text,
       ko: koText,
@@ -745,13 +834,17 @@ async function submit() {
       star: false,
       time: Date.now()
     };
+    if (getClaudeKey() && engine !== 'claude') usedFallback = true;
     entries.push(entry);
     sendOp({ op: 'add', entry });
     save(); render();
     $('textInput').value = '';
     if (usedFallback) {
       st.className = 'status err';
-      st.textContent = '⚠️ Google Translate was unreachable — a backup translator was used for this one, so double-check it.';
+      st.textContent = getClaudeKey()
+        ? '⚠️ Claude was unreachable — Google Translate was used for this one. (Check your API key via the ✨ AI button if this keeps happening.)'
+        : '⚠️ Google Translate was unreachable — a backup translator was used for this one, so double-check it.';
+      usedFallback = false;
     } else {
       st.textContent = '';
       st.className = 'status';
@@ -926,6 +1019,7 @@ $('topicInput').addEventListener('input', () => {
   sendOp({ op: 'topic', value: topic });
 });
 
+updateAiBadge();
 document.body.dataset.view = 'lesson';
 render();
 </script>
