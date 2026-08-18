@@ -116,6 +116,27 @@
 
   .count-bar { color: var(--sub); font-size: 13px; margin: 0 4px 10px; }
 
+  /* topic */
+  .topic-card {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--card); border-radius: var(--radius);
+    padding: 14px 20px; box-shadow: 0 2px 10px rgba(0,0,0,.05);
+    margin-bottom: 16px;
+  }
+  .topic-card .topic-label { font-weight: 700; font-size: 14px; white-space: nowrap; }
+  #topicInput {
+    flex: 1; border: none; outline: none; font-family: inherit;
+    font-size: 16px; font-weight: 600; color: var(--ink);
+    background: transparent; min-width: 0;
+  }
+  #topicInput::placeholder { color: var(--sub); font-weight: 400; }
+  .summary-topic {
+    display: inline-block; background: var(--accent-soft); color: var(--accent);
+    font-weight: 700; font-size: 14px; padding: 4px 12px; border-radius: 20px;
+    margin-bottom: 14px;
+  }
+  .summary-topic:empty { display: none; }
+
   /* summary view */
   .summary-view { display: none; }
   .summary-card {
@@ -249,6 +270,11 @@
       </p>
     </div>
 
+    <div class="topic-card">
+      <span class="topic-label">📌 Today's Topic</span>
+      <input id="topicInput" placeholder="What are you talking about today? · 오늘의 주제" autocomplete="off">
+    </div>
+
     <div class="input-card">
       <div class="input-row">
         <input id="textInput" type="text" placeholder="Type in Korean or English…" autocomplete="off" autofocus>
@@ -271,6 +297,7 @@
     <div class="summary-card">
       <h2>📚 Today's Lesson Summary</h2>
       <p class="date" id="summaryDate"></p>
+      <p class="summary-topic" id="summaryTopic"></p>
       <p class="prep-status" id="prepStatus"></p>
       <table>
         <thead><tr><th>ENGLISH</th><th>KOREAN</th></tr></thead>
@@ -321,6 +348,7 @@ const $ = id => document.getElementById(id);
 const KEY_CUR = 'le_current', KEY_ARC = 'le_sessions';
 
 let entries = JSON.parse(localStorage.getItem(KEY_CUR) || '[]');
+let topic = localStorage.getItem('le_topic') || '';
 let viewingArchived = null; // summary of a past session
 
 const fmtDate = d => d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
@@ -344,9 +372,10 @@ async function mmTranslate(text, sl, tl) {
   if (!data.responseData || !data.responseData.translatedText) throw new Error('mymemory empty');
   return data.responseData.translatedText;
 }
+let usedFallback = false;
 async function translate(text, sl, tl) {
-  try { return await gTranslate(text, sl, tl); }
-  catch (e) { return await mmTranslate(text, sl, tl); }
+  try { const r = await gTranslate(text, sl, tl); usedFallback = false; return r; }
+  catch (e) { usedFallback = true; return await mmTranslate(text, sl, tl); }
 }
 
 // romanization of Korean text (e.g. 만나요 → mannayo), from the same endpoint
@@ -501,7 +530,7 @@ function setupConn(c) {
   conn = c;
   c.on('open', () => {
     setConn(true);
-    c.send({ op: 'hello', entries });
+    c.send({ op: 'hello', entries, topic });
   });
   c.on('data', onRemote);
   c.on('close', () => setConn(false, '· Partner disconnected.'));
@@ -516,6 +545,9 @@ function onRemote(msg) {
     const have = new Set(entries.map(e => e.time));
     msg.entries.forEach(e => { if (!have.has(e.time)) entries.push(e); });
     entries.sort((a, b) => a.time - b.time);
+    if (msg.topic && !topic) setTopic(msg.topic);
+  } else if (msg.op === 'topic') {
+    setTopic(msg.value);
   } else if (msg.op === 'add') {
     if (!entries.some(e => e.time === msg.entry.time)) entries.push(msg.entry);
   } else if (msg.op === 'del') {
@@ -525,6 +557,7 @@ function onRemote(msg) {
     if (e) e.star = msg.val;
   } else if (msg.op === 'clear') {
     entries = [];
+    setTopic('');
     showView('lesson');
   }
   save(); render();
@@ -639,8 +672,13 @@ async function submit() {
     sendOp({ op: 'add', entry });
     save(); render();
     $('textInput').value = '';
-    st.textContent = '';
-    st.className = 'status';
+    if (usedFallback) {
+      st.className = 'status err';
+      st.textContent = '⚠️ Google Translate was unreachable — a backup translator was used for this one, so double-check it.';
+    } else {
+      st.textContent = '';
+      st.className = 'status';
+    }
   } catch (e) {
     st.className = 'status err';
     st.textContent = location.protocol === 'file:'
@@ -661,8 +699,9 @@ function showView(name) {
   $('archiveView').style.display = name === 'archive' ? 'block' : 'none';
 }
 
-function buildSummary(list, dateStr) {
+function buildSummary(list, dateStr, topicStr) {
   $('summaryDate').textContent = `${dateStr} · ${list.length} expression${list.length > 1 ? 's' : ''}`;
+  $('summaryTopic').textContent = topicStr ? `📌 ${topicStr}` : '';
   const body = $('summaryBody');
   body.innerHTML = '';
   // starred first
@@ -697,14 +736,14 @@ function buildSummary(list, dateStr) {
   });
 }
 
-async function openSummary(list, dateStr, persist) {
-  buildSummary(list, dateStr);
+async function openSummary(list, dateStr, persist, topicStr) {
+  buildSummary(list, dateStr, topicStr);
   showView('summary');
   $('prepStatus').textContent = '⏳ Adding pronunciation guides and example sentences…';
   const changed = await enrichEntries(list);
   if (changed) {
     if (persist) save();
-    buildSummary(list, dateStr);
+    buildSummary(list, dateStr, topicStr);
   }
   $('prepStatus').textContent = '';
 }
@@ -712,16 +751,18 @@ async function openSummary(list, dateStr, persist) {
 $('endBtn').addEventListener('click', () => {
   if (!entries.length) { alert('Nothing has been recorded yet!'); return; }
   viewingArchived = null;
-  openSummary(entries, fmtDate(new Date()), true);
+  openSummary(entries, fmtDate(new Date()), true, topic);
 });
 
 $('pdfBtn').addEventListener('click', () => window.print());
 
-function toMarkdown(list, dateStr) {
+function toMarkdown(list, dateStr, topicStr) {
   const starred = list.filter(e => e.star);
   const rest = list.filter(e => !e.star);
   const row = e => `| ${e.en} | ${e.ko}${e.rm ? ` *(${e.rm})*` : ''} |\n`;
-  let md = `# 📚 Lesson Notes\n\n**${dateStr}** — ${list.length} expressions\n\n`;
+  let md = `# 📚 Lesson Notes\n\n**${dateStr}** — ${list.length} expressions\n`;
+  if (topicStr) md += `\n**📌 Topic:** ${topicStr}\n`;
+  md += '\n';
   if (starred.length) {
     md += `## ⭐ Important\n\n| English | Korean |\n|---|---|\n`;
     starred.forEach(e => md += row(e));
@@ -747,7 +788,7 @@ $('dlBtn').addEventListener('click', () => {
   const isArc = !!viewingArchived;
   const list = isArc ? viewingArchived.entries : entries;
   const dateStr = isArc ? viewingArchived.date : fmtDate(new Date());
-  const md = toMarkdown(list, dateStr);
+  const md = toMarkdown(list, dateStr, isArc ? (viewingArchived.topic || '') : topic);
   const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -761,10 +802,11 @@ $('newBtn').addEventListener('click', () => {
   if (!viewingArchived && entries.length) {
     // archive current session
     const arc = JSON.parse(localStorage.getItem(KEY_ARC) || '[]');
-    arc.push({ time: Date.now(), date: fmtDate(new Date()), entries });
+    arc.push({ time: Date.now(), date: fmtDate(new Date()), topic, entries });
     localStorage.setItem(KEY_ARC, JSON.stringify(arc));
     entries = [];
     save();
+    setTopic('');
     sendOp({ op: 'clear' });
   }
   viewingArchived = null;
@@ -784,10 +826,10 @@ $('archiveBtn').addEventListener('click', () => {
     [...arc].reverse().forEach(s => {
       const div = document.createElement('div');
       div.className = 'session-item';
-      div.innerHTML = `<span class="d">📖 ${s.date}</span><span class="n">${s.entries.length} expressions →</span>`;
+      div.innerHTML = `<span class="d">📖 ${s.topic ? esc(s.topic) + ' · ' : ''}${s.date}</span><span class="n">${s.entries.length} expressions →</span>`;
       div.addEventListener('click', () => {
         viewingArchived = s;
-        openSummary(s.entries, s.date, false);
+        openSummary(s.entries, s.date, false, s.topic || '');
       });
       box.appendChild(div);
     });
@@ -795,6 +837,17 @@ $('archiveBtn').addEventListener('click', () => {
   showView('archive');
 });
 $('backBtn').addEventListener('click', () => { viewingArchived = null; render(); showView('lesson'); });
+
+function setTopic(value) {
+  topic = value || '';
+  localStorage.setItem('le_topic', topic);
+  if ($('topicInput').value !== topic) $('topicInput').value = topic;
+}
+$('topicInput').value = topic;
+$('topicInput').addEventListener('input', () => {
+  setTopic($('topicInput').value);
+  sendOp({ op: 'topic', value: topic });
+});
 
 document.body.dataset.view = 'lesson';
 render();
