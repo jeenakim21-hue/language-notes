@@ -255,7 +255,7 @@
       <div class="share-row">
         <span>Your room code:</span>
         <span class="room-code" id="myCode">······</span>
-        <button class="btn-mini" id="copyBtn">Copy invite</button>
+        <button class="btn-mini" id="copyBtn">Copy invite link</button>
       </div>
       <div class="share-row">
         <span>Or join your partner's room:</span>
@@ -263,10 +263,10 @@
         <button class="btn-mini" id="joinBtn">Join</button>
       </div>
       <p class="share-note">
-        ⚠️ <b>This is not a website link</b> — your partner needs this same HTML file first (send it once by
-        email or messenger). They open it in their browser, click <b>Live Share</b>, and enter your room code
-        (or you enter theirs — either way works). Once connected, everything you both add, star, or delete
-        shows up on both screens instantly.
+        💌 <b>Copy invite link</b> copies a link with your room code built in — send it to your partner and
+        they connect automatically, no code typing needed. (Or they can open the app and enter your code by
+        hand — either way works.) Once connected, everything you both add, star, or delete shows up on both
+        screens instantly.
       </p>
     </div>
 
@@ -569,18 +569,15 @@ $('shareBtn').addEventListener('click', () => {
   if (!p.hidden) ensurePeer(() => {});
 });
 
+// the app's public address — used for invite links even when opened as a local file
+const SITE_URL = 'https://jeenakim21-hue.github.io/language-notes/';
 const isHosted = location.protocol.startsWith('http') && !['localhost', '127.0.0.1'].includes(location.hostname);
-$('copyBtn').textContent = isHosted ? 'Copy invite link' : 'Copy invite message';
+const inviteBase = isHosted ? `${location.origin}${location.pathname}` : SITE_URL;
 
 $('copyBtn').addEventListener('click', () => {
   if (!myCode) return;
-  // On a real website this copies a one-click join link; on a local file there is no URL
-  // to share, so it copies the room code with instructions instead.
-  const invite = isHosted
-    ? `${location.origin}${location.pathname}?join=${myCode}`
-    : `Join my Korean/English lesson! Open our "Language Exchange Notes" file in your browser, click "Live Share", and enter room code: ${myCode}`;
-  navigator.clipboard.writeText(invite)
-    .then(() => { $('copyBtn').textContent = 'Copied!'; setTimeout(() => $('copyBtn').textContent = isHosted ? 'Copy invite link' : 'Copy invite message', 1500); });
+  navigator.clipboard.writeText(`${inviteBase}?join=${myCode}`)
+    .then(() => { $('copyBtn').textContent = 'Copied!'; setTimeout(() => $('copyBtn').textContent = 'Copy invite link', 1500); });
 });
 
 function joinRoom(code) {
