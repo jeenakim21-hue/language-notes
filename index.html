@@ -93,6 +93,13 @@
   .tag.ko { background: #e8f7fe; color: var(--ko-color); }
   .lang-block .text { font-size: 24px; font-weight: 700; line-height: 1.35; word-break: keep-all; }
   .rm { color: var(--sub); font-size: 14px; font-style: italic; margin-top: 3px; }
+  .alt-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .alt-label { font-size: 11.5px; color: var(--sub); width: 100%; }
+  .alt-chip {
+    background: var(--accent-soft); color: var(--accent); font-size: 13px;
+    font-weight: 600; padding: 4px 10px; border-radius: 20px;
+  }
+  .alt-chip:hover { background: var(--accent); color: #fff; }
   .speak-btn {
     background: transparent; font-size: 15px; padding: 2px 4px;
     opacity: .5; line-height: 1;
@@ -358,11 +365,17 @@ const hasHangul = s => /[ㄱ-힝]/.test(s);
 
 /* ===== translation ===== */
 async function gTranslate(text, sl, tl) {
-  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sl}&tl=${tl}&dt=t&q=${encodeURIComponent(text)}`;
+  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sl}&tl=${tl}&dt=t&dt=at&q=${encodeURIComponent(text)}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error('gtx ' + res.status);
   const data = await res.json();
-  return data[0].map(seg => seg[0]).join('');
+  const text2 = data[0].filter(seg => seg[0]).map(seg => seg[0]).join('');
+  // alternative phrasings — only offered for single-segment inputs, where they read naturally
+  let alts = [];
+  if (data[5] && data[5].length === 1 && data[5][0][2]) {
+    alts = data[5][0][2].map(a => a[0]).filter(a => a && a !== text2).slice(0, 3);
+  }
+  return { text: text2, alts };
 }
 async function mmTranslate(text, sl, tl) {
   const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${sl}|${tl}`;
@@ -373,10 +386,11 @@ async function mmTranslate(text, sl, tl) {
   return data.responseData.translatedText;
 }
 let usedFallback = false;
-async function translate(text, sl, tl) {
+async function translateFull(text, sl, tl) {
   try { const r = await gTranslate(text, sl, tl); usedFallback = false; return r; }
-  catch (e) { usedFallback = true; return await mmTranslate(text, sl, tl); }
+  catch (e) { usedFallback = true; return { text: await mmTranslate(text, sl, tl), alts: [] }; }
 }
+async function translate(text, sl, tl) { return (await translateFull(text, sl, tl)).text; }
 
 // romanization of Korean text (e.g. 만나요 → mannayo), from the same endpoint
 async function fetchRm(koText) {
@@ -552,6 +566,9 @@ function onRemote(msg) {
     if (!entries.some(e => e.time === msg.entry.time)) entries.push(msg.entry);
   } else if (msg.op === 'del') {
     entries = entries.filter(e => e.time !== msg.time);
+  } else if (msg.op === 'edit') {
+    const e = entries.find(e => e.time === msg.time);
+    if (e) { e.en = msg.en; e.ko = msg.ko; e.rm = msg.rm; e.alts = msg.alts; }
   } else if (msg.op === 'star') {
     const e = entries.find(e => e.time === msg.time);
     if (e) e.star = msg.val;
@@ -601,6 +618,27 @@ const escAttr = s => esc(s).replace(/"/g,'&quot;');
 const speakBtn = (text, lang) =>
   `<button class="speak-btn" title="Listen" data-say="${escAttr(text)}" data-lang="${lang}">🔊</button>`;
 
+const altChips = (e, i) => (e.alts && e.alts.length)
+  ? `<div class="alt-row"><span class="alt-label">Not quite right? Tap another translation:</span>` +
+    e.alts.map((a, ai) => `<button class="alt-chip" data-i="${i}" data-ai="${ai}">${esc(a)}</button>`).join('') + '</div>'
+  : '';
+
+async function swapAlt(i, ai) {
+  const e = entries[i];
+  const chosen = e.alts[ai];
+  const isKoTarget = e.src === 'en'; // translated side is Korean
+  e.alts[ai] = isKoTarget ? e.ko : e.en; // old main becomes an alternative
+  if (isKoTarget) {
+    e.ko = chosen;
+    e.rm = '';
+    try { e.rm = await fetchRm(e.ko); } catch (err) {}
+  } else {
+    e.en = chosen;
+  }
+  save(); render();
+  sendOp({ op: 'edit', time: e.time, en: e.en, ko: e.ko, rm: e.rm, alts: e.alts });
+}
+
 function render() {
   const box = $('entries');
   box.innerHTML = '';
@@ -616,11 +654,13 @@ function render() {
         <div class="lang-block">
           <div class="tag-row"><span class="tag en">ENGLISH</span>${speakBtn(e.en, 'en-US')}</div>
           <div class="text">${esc(e.en)}</div>
+          ${e.src === 'ko' ? altChips(e, i) : ''}
         </div>
         <div class="lang-block">
           <div class="tag-row"><span class="tag ko">KOREAN</span>${speakBtn(e.ko, 'ko-KR')}</div>
           <div class="text">${esc(e.ko)}</div>
           ${e.rm ? `<div class="rm">${esc(e.rm)}</div>` : ''}
+          ${e.src === 'en' ? altChips(e, i) : ''}
         </div>
       </div>
       <div class="entry-btns">
@@ -632,6 +672,8 @@ function render() {
 }
 
 $('entries').addEventListener('click', ev => {
+  const chip = ev.target.closest('.alt-chip');
+  if (chip) { swapAlt(+chip.dataset.i, +chip.dataset.ai); return; }
   const b = ev.target.closest('button[data-act]');
   if (!b) return;
   const i = +b.dataset.i;
@@ -654,14 +696,16 @@ async function submit() {
   $('goBtn').disabled = true;
   try {
     const isKo = hasHangul(text);
-    const translated = await translate(text, isKo ? 'ko' : 'en', isKo ? 'en' : 'ko');
-    const koText = isKo ? text : translated;
+    const tr = await translateFull(text, isKo ? 'ko' : 'en', isKo ? 'en' : 'ko');
+    const koText = isKo ? text : tr.text;
     let rm = '';
     try { rm = await fetchRm(koText); } catch (e) {}
     const entry = {
-      en: isKo ? translated : text,
+      en: isKo ? tr.text : text,
       ko: koText,
       rm,
+      src: isKo ? 'ko' : 'en',
+      alts: tr.alts,
       star: false,
       time: Date.now()
     };
